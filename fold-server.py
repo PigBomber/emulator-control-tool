@@ -329,16 +329,38 @@ def get_local_ips():
     return ips
 
 
+class Tee:
+    """同时向多个流写入（日志文件 + 终端），让前台手动运行也能看到输出。"""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            try:
+                s.write(data)
+                s.flush()
+            except Exception:
+                pass
+
+    def flush(self):
+        for s in self.streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+
 def main():
     global EMULATOR_INSTANCE
     if len(sys.argv) > 1:
         EMULATOR_INSTANCE = sys.argv[1]
 
-    # ===== 日志落盘（之后所有 print 写入文件，不依赖 spawn 的 stdio）=====
+    # ===== 日志落盘 + 终端输出（之前所有 print 写入文件，现在同时写终端）=====
     log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fold-server.log')
     log_fp = open(log_path, 'w', buffering=1, encoding='utf-8')  # 行缓冲，实时落盘，UTF-8 避免 Windows 乱码
-    sys.stdout = log_fp
-    sys.stderr = log_fp
+    sys.stdout = Tee(log_fp, sys.stdout)   # 既写日志文件，也写终端
+    sys.stderr = Tee(log_fp, sys.stderr)
 
     print("=" * 50)
     print(f"折叠控制 HTTP 服务启动")
