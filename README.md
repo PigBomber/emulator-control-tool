@@ -150,9 +150,12 @@ curl "http://127.0.0.1:8766/fold?state=half-open" # 悬停
 
 **triggerFold 连接失败**：确认 fold-server.py 在运行、`hdc list target` 能看到模拟器。重启服务会重建端口转发。
 
-**多开模拟器**：自动启动走的是默认实例；需指定时用手动方式 `python3 fold-server.py "实例名"`。
+**多开模拟器**：在 config.py 设 `EMULATOR_INSTANCE = "实例名"` 指定要控制哪一台。多设备同时在线时，服务会自动把实例名映射到对应的 connect-key（靠 Emulator 进程的监听端口），精确路由到目标设备，不会误连到另一台。
 
-**多个设备同时连接（hdc 报 `need connect-key`）**：多设备在线时，`fold-server` 会自动用 `-t <connect-key>` 路由到目标设备，默认选 `hdc list targets` 的第一台并给出警告。如需指定，设置环境变量 `HDC_CONNECT_KEY`（值为 `hdc list targets` 输出的 connect-key，如 `127.0.0.1:5555`）后重启服务。
+**多个设备同时连接（hdc 报 `need connect-key`）**：多设备在线时，`fold-server` 自动用 `-t <connect-key>` 路由到目标设备，按以下优先级定位：
+1. 自动映射：根据 `EMULATOR_INSTANCE` 实例名找到对应 connect-key（推荐，多开时只需改实例名）
+2. 显式指定：环境变量 `HDC_CONNECT_KEY` 或 config.py 的 `HDC_CONNECT_KEY`（值为 `hdc list targets` 的 connect-key，如 `127.0.0.1:5555`）
+3. 兜底：取第一台并警告
 
 **自动启动相关环境变量**：
 

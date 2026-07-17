@@ -318,12 +318,113 @@ def list_targets():
     return keys
 
 
+def build_instance_connectkey_map():
+    """建立「Emulator 实例名 → hdc connect-key」的映射。
+    原理：每个 `Emulator -start <实例名>` 进程会独占监听一个 TCP 端口（如 127.0.0.1:5555），
+    该端口就是它在 hdc 里的 connect-key。所以：
+      Emulator 进程命令行(-start 实例名) → PID → lsof 查监听端口 → connect-key
+    返回 dict: {实例名: '127.0.0.1:5555', ...}。找不到返回空 dict。
+    跨平台：Mac/Linux 用 lsof，Windows 用 netstat。"""
+    mapping = {}
+    is_win = platform.system() == "Windows"
+
+    # 1. 找所有 Emulator -start 进程，提取 (PID, 实例名)
+    #    命令行形如：.../Emulator -start <实例名> [-noWindow]
+    #    实例名可能含空格（如 "Mate X7"），-start 后到下一个 -flag 之间的 token 都属实例名
+    emulator_pids = {}
+    try:
+        if is_win:
+            rc, out = run_cmd(
+                'wmic process where "name=\'emulator.exe\'" get ProcessId,CommandLine /format:csv',
+                timeout=5)
+            for line in out.splitlines():
+                if "-start" not in line:
+                    continue
+                parts = line.split(",")
+                # CSV: ...,CommandLine,ProcessId
+                if len(parts) < 2:
+                    continue
+                pid = parts[-1].strip()
+                cmdline = ",".join(parts[:-1])
+                name = _extract_instance_from_cmdline(cmdline)
+                if name and pid:
+                    emulator_pids[pid] = name
+        else:
+            rc, out = run_cmd(["pgrep", "-f", "Emulator -start"], timeout=5)
+            for pid in out.split():
+                pid = pid.strip()
+                if not pid:
+                    continue
+                rc2, cmdline = run_cmd(["ps", "-p", pid, "-o", "command="], timeout=3)
+                name = _extract_instance_from_cmdline(cmdline)
+                if name:
+                    emulator_pids[pid] = name
+    except Exception:
+        pass
+
+    if not emulator_pids:
+        return mapping
+
+    # 2. 对每个 PID，查它监听的 TCP 端口 → 组成 connect-key
+    for pid, inst_name in emulator_pids.items():
+        port = _listening_port(pid)
+        if port:
+            mapping[inst_name] = f"127.0.0.1:{port}"
+    return mapping
+
+
+def _extract_instance_from_cmdline(cmdline):
+    """从命令行提取 -start 后的实例名（支持带空格的名字，如 'Mate X7'）。
+    规则：取 '-start' 之后、下一个以 '-' 开头的 flag 之前的所有 token，拼成实例名。"""
+    toks = cmdline.split()
+    if "-start" not in toks:
+        return None
+    idx = toks.index("-start")
+    name_parts = []
+    for tok in toks[idx + 1:]:
+        if tok.startswith("-"):  # 遇到下一个 flag（-noWindow 等）停止
+            break
+        name_parts.append(tok)
+    return " ".join(name_parts) if name_parts else None
+
+
+def _listening_port(pid):
+    """查进程 PID 监听的 TCP 端口（模拟器监听 5555+）。返回端口号字符串或 None。
+    Mac/Linux 用 lsof（注意 -a 表示 AND，否则 -p 与 -iTCP 是 OR 会混入其它进程），
+    Windows 用 netstat。"""
+    is_win = platform.system() == "Windows"
+    try:
+        if is_win:
+            rc, out = run_cmd('netstat -ano -p TCP', timeout=5)
+            for line in out.splitlines():
+                cols = line.split()
+                # TCP  127.0.0.1:5555  0.0.0.0:0  LISTENING  <pid>
+                if len(cols) >= 5 and "LISTEN" in cols[-2].upper() and cols[-1] == str(pid):
+                    addr = cols[1]
+                    if ":" in addr:
+                        return addr.rsplit(":", 1)[-1]
+        else:
+            # 关键：-a 让 -p 和 -iTCP 取交集，否则会列出所有进程的 TCP
+            rc, out = run_cmd(f"lsof -nP -a -p {pid} -iTCP -sTCP:LISTEN", timeout=5)
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                # NAME 列形如 127.0.0.1:5555
+                if len(parts) >= 9 and ":" in parts[8]:
+                    return parts[8].rsplit(":", 1)[-1]
+    except Exception:
+        pass
+    return None
+
+
 def resolve_connect_key():
     """确定本服务要路由到的目标设备 connect-key。
     策略：
       0 个设备 → 返回 (None, 'no_device')
       1 个设备 → 返回 (key, 'auto')  即便单设备也显式带 -t 更稳
-      多个设备 → 尝试用 config.py/环境变量指定的 connect-key，否则取第一个并警告
+      多个设备 → 按优先级：
+        1) 自动映射：把 EMULATOR_INSTANCE(实例名) → connect-key（靠 Emulator 进程监听端口）
+        2) config.py/环境变量 HDC_CONNECT_KEY 显式指定的 connect-key
+        3) 兜底：取第一个并警告
     返回 (connect_key_or_None, reason)。"""
     global CURRENT_CONNECT_KEY
     keys = list_targets()
@@ -333,7 +434,16 @@ def resolve_connect_key():
     if len(keys) == 1:
         CURRENT_CONNECT_KEY = keys[0]
         return keys[0], "auto"
-    # 多设备：优先用 config.py/环境变量指定的 connect-key（CONNECT_KEY_CFG 已含优先级）
+
+    # 多设备优先级 1：自动映射 EMULATOR_INSTANCE → connect-key
+    inst_map = build_instance_connectkey_map()
+    mapped = inst_map.get(EMULATOR_INSTANCE)
+    if mapped and mapped in keys:
+        CURRENT_CONNECT_KEY = mapped
+        print(f"  ✓ 多设备自动定位: 实例 '{EMULATOR_INSTANCE}' → {mapped}")
+        return mapped, "mapped"
+
+    # 多设备优先级 2：config.py/环境变量指定的 connect-key
     cfg_key = (CONNECT_KEY_CFG or "").strip()
     if cfg_key and cfg_key in keys:
         CURRENT_CONNECT_KEY = cfg_key
