@@ -19,62 +19,43 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 ---
 
-## 配置文件
+## 快速开始
 
-所有可调项集中在 **config.py**（纯 Python 变量，直接改值即可），改完重启 `emulator-control-server.py` / `clean.py` 生效。本文件入库，团队共享默认值。
+三步：改配置 → 跑服务 → 跑用例。
 
-**优先级**（高 → 低）：
+### 第 1 步：改 config.py（告诉它控制哪台模拟器）
 
-```
-命令行参数  >  环境变量  >  config.py  >  代码默认值
-```
+打开 `config.py`，把 `EMULATOR_INSTANCE` 改成你要的实例名（用 `emulator -list` 查可用名字）：
 
-| 配置项 | 命令行 | 环境变量 | config.py 变量 | 默认 |
-|--------|--------|----------|----------------|------|
-| 模拟器实例名 | `python3 emulator-control-server.py "Pura X"` | `EMULATOR_INSTANCE` | `EMULATOR_INSTANCE` | `Mate X7` |
-| 窗口模式 | — | `FOLD_HEADLESS` | `HEADLESS` | 带窗口 |
-| 启动超时 | — | `FOLD_EMU_TIMEOUT` | `EMU_START_TIMEOUT` | `120` |
-| 服务端口 | — | — | `PORT` | `8766` |
-| 设备端口 | — | — | `DEVICE_PORT` | `8765` |
-| 多设备 connect-key | — | `HDC_CONNECT_KEY` | `HDC_CONNECT_KEY` | 自动 |
-| Emulator 路径 | — | `EMULATOR_PATH` | `EMULATOR_PATH` | 自动探测 |
-| hdc 路径 | — | `HDC_PATH` | `HDC_PATH` | 自动探测 |
-
-个人要临时用不同值，不必改 config.py，用环境变量或命令行参数覆盖即可。
-
----
-
-## 使用步骤
-
-### 1. 启动折叠屏模拟器
-
-模拟器不必自己手动开 —— `emulator-control-server.py` 启动时会检查目标实例状态，没在跑就自动拉起，并轮询直到 `hdc` 识别到设备，全程在终端打印进度提示。冷启动常见 30~90s。
-
-默认**带 GUI 窗口**启动（可观察折叠动画/方向）；CI 或不需要画面时设 `FOLD_HEADLESS=1` 切无窗口。
-
-```
-  实例 'Mate X7' 未运行，自动启动中（带窗口模式）...
-  等待模拟器上线 / hdc 识别设备（最多 120s，按 Ctrl+C 可中断）...
-  . 等待模拟器上线（1/60）
-  ✓ 模拟器已上线 — hdc 识别到设备: 127.0.0.1:5555
+```python
+EMULATOR_INSTANCE = "Pura X Max"   # 改成你的实例名
+HEADLESS = False                   # False=带窗口看动画，True=无窗口(省资源)
+PORT = 8766                        # 一般不用改
 ```
 
-当然也可以自己先在 DevEco Studio 里手动启动模拟器。
+> 不改也行，默认是 `Mate X7`。改完**重启** `emulator-control-server.py` 生效。
+> 只想临时换一台？不用改 config，直接 `python3 emulator-control-server.py "Pura X Max"` 命令行传参即可。
 
-### 2. 启动 emulator-control-server（手动）
-
-跑测试前需要先手动启动 emulator-control-server：
+### 第 2 步：跑 emulator-control-server（手动启动）
 
 ```bash
-python3 emulator-control-server.py              # 用 config.py 里的实例名
-python3 emulator-control-server.py "Mate X7"    # 或命令行临时指定实例名
+python3 emulator-control-server.py
 ```
 
-启动后保持运行，测试代码的 `triggerFold('half-open')` 会请求本服务。启动日志写入 `emulator-control-server.log`（排查时查看）。按 Ctrl+C 停止（会自动清理端口转发 + 残留进程）。
+它会：① 自动拉起模拟器（没在跑的话）② 等 hdc 识别设备 ③ 建立 hdc 端口转发 ④ 监听 8766 等用例请求。**保持运行**，跑用例期间别关。
 
-### 3. 测试侧调用
+看到这两行就是成功了：
 
-把 `FoldTrigger.ets` 放进测试工程的 `ohosTest/ets/util/` 下，用例里导入调用：
+```
+✓ 目标设备（实例自动定位）: 127.0.0.1:5557
+✓ hdc 反向端口转发已建立（rport: 模拟器内 127.0.0.1:8765 → 宿主机:8766）
+```
+
+按 `Ctrl+C` 停止（会自动清理端口转发 + 残留进程）。排查看 `emulator-control-server.log`。
+
+### 第 3 步：跑用例
+
+把 `FoldTrigger.ets` 放进测试工程 `ohosTest/ets/util/`，用例里调用：
 
 ```typescript
 import { triggerFold, triggerLandscapeHover, sleep } from '../util/FoldTrigger';
@@ -134,10 +115,23 @@ curl "http://127.0.0.1:8766/fold?state=half-open" # 悬停
 2. 显式指定：环境变量 `HDC_CONNECT_KEY` 或 config.py 的 `HDC_CONNECT_KEY`（值为 `hdc list targets` 的 connect-key，如 `127.0.0.1:5555`）
 3. 兜底：取第一台并警告
 
-**自动启动相关环境变量**：
+---
 
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `FOLD_HEADLESS` | `0` | `0`=带 GUI 窗口（默认，可观察折叠动画）；`1`=无窗口（省资源/CI） |
-| `FOLD_EMU_TIMEOUT` | `120` | 等待模拟器上线超时秒数（冷启动慢时调大） |
-| `HDC_CONNECT_KEY` | 空 | 多设备时显式指定目标设备的 connect-key |
+## 配置参考
+
+所有可调项集中在 `config.py`（纯 Python 变量，直接改值），改完重启 `emulator-control-server.py` 生效。
+
+**优先级**（高 → 低）：`命令行参数  >  环境变量  >  config.py  >  代码默认值`
+
+| 配置项 | 命令行 | 环境变量 | config.py 变量 | 默认 |
+|--------|--------|----------|----------------|------|
+| 模拟器实例名 | `python3 emulator-control-server.py "Pura X"` | `EMULATOR_INSTANCE` | `EMULATOR_INSTANCE` | `Mate X7` |
+| 窗口模式 | — | `FOLD_HEADLESS` | `HEADLESS` | 带窗口 |
+| 启动超时 | — | `FOLD_EMU_TIMEOUT` | `EMU_START_TIMEOUT` | `120` |
+| 服务端口 | — | — | `PORT` | `8766` |
+| 设备端口 | — | — | `DEVICE_PORT` | `8765` |
+| 多设备 connect-key | — | `HDC_CONNECT_KEY` | `HDC_CONNECT_KEY` | 自动 |
+| Emulator 路径 | — | `EMULATOR_PATH` | `EMULATOR_PATH` | 自动探测 |
+| hdc 路径 | — | `HDC_PATH` | `HDC_PATH` | 自动探测 |
+
+> 个人临时换值不必改 config.py，用环境变量或命令行参数覆盖即可。
