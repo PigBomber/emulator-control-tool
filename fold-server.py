@@ -510,11 +510,19 @@ def wait_device_online(timeout=EMU_START_TIMEOUT, instance_name=None, stop_flag=
             if inst:
                 last_running = inst["isRunning"]
         # 2) 精确等 instance_name 对应的 connect-key 出现
+        #    关键：必须同时满足两个条件才算真正可用——
+        #    a) 映射能查到 connect-key（Emulator 进程已监听端口）
+        #    b) hdc list targets 也包含这个 key（hdc server 已登记设备）
+        #    只满足 a 不满足 b 时，rport 会报 "Device not found or connected"（时序竞态）。
         if instance_name:
             inst_map = build_instance_connectkey_map()
             target_key = inst_map.get(instance_name)
             if target_key:
-                return target_key, f"实例 '{instance_name}' 已上线: {target_key}"
+                # 还要确认 hdc server 已登记这台设备
+                online_keys = list_targets()
+                if target_key in online_keys:
+                    return target_key, f"实例 '{instance_name}' 已上线: {target_key}"
+                # 映射有但 hdc 没登记：继续等（不打点，下一轮再查）
         else:
             # 没指定实例名：退化为"任意设备上线"（兼容老用法）
             keys = list_targets()
