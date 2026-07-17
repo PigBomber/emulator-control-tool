@@ -419,14 +419,26 @@ def _listening_port(pid):
 def resolve_connect_key():
     """确定本服务要路由到的目标设备 connect-key。
     策略：
-      0 个设备 → 返回 (None, 'no_device')
-      1 个设备 → 返回 (key, 'auto')  即便单设备也显式带 -t 更稳
-      多个设备 → 按优先级：
-        1) 自动映射：把 EMULATOR_INSTANCE(实例名) → connect-key（靠 Emulator 进程监听端口）
-        2) config.py/环境变量 HDC_CONNECT_KEY 显式指定的 connect-key
-        3) 兜底：取第一个并警告
-    返回 (connect_key_or_None, reason)。"""
+      优先用自动映射（EMULATOR_INSTANCE → connect-key，靠 Emulator 进程监听端口），
+      因为它比 hdc list targets 更稳定（后者有时因 hdc server 状态返回空）。
+      映射失败再退化为 list_targets。
+      返回 (connect_key_or_None, reason)。"""
     global CURRENT_CONNECT_KEY
+
+    # 优先级 1：自动映射 EMULATOR_INSTANCE → connect-key（最可靠，单/多设备通用）
+    inst_map = build_instance_connectkey_map()
+    mapped = inst_map.get(EMULATOR_INSTANCE)
+    if mapped:
+        # 交叉验证：映射到的 key 最好也在 list_targets 里（确认 hdc 能识别）
+        # 但即使 list_targets 暂时为空（hdc server 抖动），映射有效就用映射
+        keys = list_targets()
+        if not keys or mapped in keys:
+            CURRENT_CONNECT_KEY = mapped
+            return mapped, "mapped"
+        # 映射有但 list_targets 里没有这台 → hdc 还没识别到，用映射值（hdc 命令带 -t 时
+        # hdc 会自动连这个 key）
+
+    # 优先级 2：hdc list targets 实际看到的设备
     keys = list_targets()
     if not keys:
         CURRENT_CONNECT_KEY = None
@@ -434,6 +446,18 @@ def resolve_connect_key():
     if len(keys) == 1:
         CURRENT_CONNECT_KEY = keys[0]
         return keys[0], "auto"
+
+    # 优先级 3：config.py/环境变量指定的 connect-key（多设备且映射失败时）
+    cfg_key = (CONNECT_KEY_CFG or "").strip()
+    if cfg_key and cfg_key in keys:
+        CURRENT_CONNECT_KEY = cfg_key
+        return cfg_key, "configured"
+    # 未明确指定：默认取第一个，但强烈提示用户多设备需指定
+    CURRENT_CONNECT_KEY = keys[0]
+    print(f"  ⚠ 检测到 {len(keys)} 台设备: {keys}")
+    print(f"    当前默认使用第一台: {keys[0]}")
+    print(f"    如需指定其它设备，设置环境变量 HDC_CONNECT_KEY（值为 hdc list targets 的 connect-key）后重启")
+    return keys[0], "first_of_multi"
 
     # 多设备优先级 1：自动映射 EMULATOR_INSTANCE → connect-key
     inst_map = build_instance_connectkey_map()
@@ -577,9 +601,10 @@ def setup_fport():
             return False
         if reason == "auto":
             print(f"  ✓ 目标设备: {key}")
+        elif reason == "mapped":
+            print(f"  ✓ 目标设备（实例自动定位）: {key}")
         # reason == 'first_of_multi' 的警告已在 resolve_connect_key 里打印
-        # reason == 'configured' 也打印一下
-        if reason == "configured":
+        elif reason == "configured":
             print(f"  ✓ 目标设备（config.py/环境变量 指定）: {key}")
 
         # 清除可能存在的旧转发（fport rm 能同时清 fport 和 rport 建的转发）
