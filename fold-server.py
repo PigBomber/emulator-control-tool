@@ -25,6 +25,8 @@ import os
 import socket
 import platform
 import threading
+import time
+import signal
 
 # ============ 配置 ============
 # fold-server 监听端口（宿主机）
@@ -32,6 +34,18 @@ PORT = 8766
 # 设备内访问端口（模拟器内 FoldTrigger 访问的端口，通过 rport 转发到 PORT）
 # 用不同端口避免与 fold-server 监听冲突
 DEVICE_PORT = 8765
+
+# 模拟器自动启动相关配置（可用环境变量覆盖）
+# 无窗口模式：默认 True，FOLD_HEADLESS=0 可改为带窗口（调试用）
+HEADLESS = os.environ.get("FOLD_HEADLESS", "1") != "0"
+# 等待模拟器上线（hdc 识别设备）超时秒数；冷启动常见 30~90s
+EMU_START_TIMEOUT = int(os.environ.get("FOLD_EMU_TIMEOUT", "120"))
+# 轮询设备上线间隔秒数
+EMU_POLL_INTERVAL = 2
+
+# 运行时确定的当前目标设备 connect-key（多设备时用于 hdc -t 路由）
+# None 表示尚未确定 / 单设备时 hdc 无需 -t
+CURRENT_CONNECT_KEY = None
 
 def find_deveco_root():
     """自动探测 DevEco Studio 安装根目录（不写死路径）"""
@@ -164,45 +178,287 @@ def print_paths():
     print(f"    hdc: {HDC}{'  ✓' if os.path.isfile(HDC) else '  （用 PATH 兜底）'}")
 
 
+# ============ 跨平台命令执行辅助 ============
+
+def run_cmd(args, timeout=10):
+    """执行命令，跨平台处理 Windows shell 引号。返回 (returncode, combined_output)。"""
+    try:
+        if platform.system() == "Windows" and isinstance(args, str):
+            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, shell=True)
+        elif isinstance(args, list):
+            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        else:
+            r = subprocess.run(args, capture_output=True, text=True, timeout=timeout, shell=True)
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+    except FileNotFoundError:
+        return -1, "命令不存在"
+    except subprocess.TimeoutExpired:
+        return -1, "命令超时"
+    except Exception as e:
+        return -1, str(e)
+
+
+def hdc_cmd(extra_args, timeout=10):
+    """执行 hdc 命令，自动在多设备时插入 -t <connect-key> 路由。
+    extra_args: hdc 子命令参数列表，如 ['fport', 'ls'] 或 ['rport', 'tcp:8765', 'tcp:8766']。"""
+    args = [HDC]
+    # 多设备场景：全局加 -t 指定目标，避免 "need connect-key" 错误
+    if CURRENT_CONNECT_KEY:
+        args += ["-t", CURRENT_CONNECT_KEY]
+    if isinstance(extra_args, str):
+        extra_args = extra_args.split()
+    args += extra_args
+    if platform.system() == "Windows":
+        # Windows 下 HDC 路径可能含空格，用 shell + 引号
+        quoted = " ".join(f'"{a}"' if " " in a else a for a in args)
+        return run_cmd(quoted, timeout=timeout)
+    return run_cmd(args, timeout=timeout)
+
+
+# ============ 模拟器实例管理（自动启动 + 状态探测）============
+
+def list_instances():
+    """读取 Emulator -list -details，返回实例信息列表。
+    每个元素: {'name', 'isRunning'(bool), 'deviceType'}。失败返回空列表。"""
+    rc, out = run_cmd([EMULATOR, "-list", "-details"], timeout=10)
+    if rc != 0 or not out.strip():
+        return []
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
+    result = []
+    for inst in data:
+        name = inst.get("name", "").strip()
+        if not name:
+            continue
+        result.append({
+            "name": name,
+            "isRunning": str(inst.get("isRunning", "")).lower() == "true",
+            "deviceType": inst.get("deviceType", ""),
+        })
+    return result
+
+
+def list_instance_names():
+    """轻量列出所有实例名（Emulator -list），用于提示用户。失败返回空列表。"""
+    rc, out = run_cmd([EMULATOR, "-list"], timeout=10)
+    if rc != 0:
+        return []
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
+def find_instance_status(name):
+    """查单个实例状态。返回实例 dict（含 isRunning），找不到返回 None。"""
+    for inst in list_instances():
+        if inst["name"] == name:
+            return inst
+    return None
+
+
+def start_emulator(name):
+    """以 detached 后台进程启动指定实例（无窗口模式），不阻塞调用方。
+    返回 (success, message)。"""
+    args = [EMULATOR, "-start", name]
+    if HEADLESS:
+        args.append("-noWindow")
+    try:
+        if platform.system() == "Windows":
+            # Windows: detached 需 CREATE_NEW_PROCESS_GROUP（Python 自动处理 detached=True）
+            subprocess.Popen(
+                args, creationflags=subprocess.DETACHED_PROCESS if hasattr(subprocess, "DETACHED_PROCESS") else 0,
+                close_fds=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            # Mac/Linux: 用 start_new_session 脱离父进程，输出丢弃（emulator 自写日志）
+            subprocess.Popen(args, start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, f"已发出启动命令: {' '.join(args)}"
+    except FileNotFoundError:
+        return False, f"找不到 Emulator: {EMULATOR}"
+    except Exception as e:
+        return False, str(e)
+
+
+def list_targets():
+    """hdc list targets，返回在线设备的 connect-key 列表。
+    [Empty] 或无输出视为没有设备。"""
+    rc, out = run_cmd([HDC, "list", "targets"], timeout=5)
+    if rc != 0:
+        return []
+    keys = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or line in ("[Empty]", "Empty", "No target."):
+            continue
+        # 多设备时每行一个 connect-key，可能含状态后缀，取第一列
+        key = line.split()[0]
+        if key:
+            keys.append(key)
+    return keys
+
+
+def resolve_connect_key():
+    """确定本服务要路由到的目标设备 connect-key。
+    策略：
+      0 个设备 → 返回 (None, 'no_device')
+      1 个设备 → 返回 (key, 'auto')  即便单设备也显式带 -t 更稳
+      多个设备 → 尝试用环境变量 HDC_CONNECT_KEY，否则取第一个并警告
+    返回 (connect_key_or_None, reason)。"""
+    global CURRENT_CONNECT_KEY
+    keys = list_targets()
+    if not keys:
+        CURRENT_CONNECT_KEY = None
+        return None, "no_device"
+    if len(keys) == 1:
+        CURRENT_CONNECT_KEY = keys[0]
+        return keys[0], "auto"
+    # 多设备：优先用环境变量指定的 connect-key
+    env_key = os.environ.get("HDC_CONNECT_KEY", "").strip()
+    if env_key and env_key in keys:
+        CURRENT_CONNECT_KEY = env_key
+        return env_key, "env"
+    # 未明确指定：默认取第一个，但强烈提示用户多设备需指定
+    CURRENT_CONNECT_KEY = keys[0]
+    print(f"  ⚠ 检测到 {len(keys)} 台设备: {keys}")
+    print(f"    当前默认使用第一台: {keys[0]}")
+    print(f"    如需指定其它设备，设置环境变量 HDC_CONNECT_KEY（值为 hdc list targets 的 connect-key）后重启")
+    return keys[0], "first_of_multi"
+
+
+def sleep_interruptible(seconds, stop_flag=None):
+    """可被 Ctrl-C 即时中断的 sleep。
+    用 0.05s 小睡循环：保证主线程的 SIGINT handler（已全局注册）在字节码间隙被调用，
+    Mac/Windows 都能在 0.05s 内响应。可选传入 stop_flag dict 提前退出。"""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if stop_flag is not None and stop_flag.get("stop"):
+            return
+        try:
+            time.sleep(0.05)
+        except KeyboardInterrupt:
+            raise  # 透传给上层处理
+
+
+def wait_device_online(timeout=EMU_START_TIMEOUT, instance_name=None, stop_flag=None):
+    """轮询直到 hdc 能识别到设备 + 实例 isRunning=true。
+    返回 (connect_key_or_None, message)。Ctrl-C 或 stop_flag 可即时中断。"""
+    deadline = time.time() + timeout
+    attempt = 0
+    last_running = None
+    while time.time() < deadline:
+        # 用户中途 Ctrl-C：立即退出
+        if stop_flag is not None and stop_flag.get("stop"):
+            return None, "用户中断等待"
+        attempt += 1
+        # 1) 实例 isRunning 是否翻 true（emulator 进程已就绪）
+        if instance_name:
+            inst = find_instance_status(instance_name)
+            if inst:
+                last_running = inst["isRunning"]
+        # 2) hdc 是否识别到设备
+        keys = list_targets()
+        if keys:
+            return keys[0], f"hdc 识别到设备: {keys[0]}"
+        # 终端进度：每轮打一个点
+        running_hint = "" if last_running is None else (f" [实例进程 {'就绪' if last_running else '启动中'}]")
+        total_attempts = max(1, timeout // EMU_POLL_INTERVAL)
+        print(f"  . 等待模拟器上线{running_hint}（{attempt}/{total_attempts}）")
+        # 可中断 sleep（0.05s 粒度，Ctrl-C 在此窗口内触发）
+        sleep_interruptible(EMU_POLL_INTERVAL, stop_flag)
+    return None, f"等待 {timeout}s 后设备仍未上线"
+
+
+def ensure_emulator_running(stop_flag=None):
+    """启动前置检查：确认目标实例运行中，没在跑就自动拉起并等设备上线。
+    失败只打印警告、不抛异常，让 HTTP 服务保持可用（降级风格与现有 setup_fport 一致）。
+    stop_flag: 共享 flag dict，Ctrl-C 时由全局 handler 置 {stop:True}，本函数提前返回。"""
+    # Emulator 不可用直接跳过（无法探测/启动）
+    if not os.path.isfile(EMULATOR):
+        print(f"  ⚠ 找不到 Emulator，跳过自动启动检查（手动确认模拟器状态）: {EMULATOR}")
+        return
+
+    inst = find_instance_status(EMULATOR_INSTANCE)
+    if inst is None:
+        # 实例名不存在：列出可用实例名辅助排查
+        print(f"  ⚠ 实例 '{EMULATOR_INSTANCE}' 不存在，无法自动启动")
+        names = list_instance_names()
+        if names:
+            print(f"    可用实例: {', '.join(names)}")
+        print(f"    用法: python3 fold-server.py \"<实例名>\"")
+        return
+
+    if inst["isRunning"]:
+        print(f"  ✓ 实例 '{EMULATOR_INSTANCE}' 已在运行")
+        return
+
+    # 未运行 → 自动启动（无窗口）
+    mode = "无窗口" if HEADLESS else "带窗口"
+    print(f"  实例 '{EMULATOR_INSTANCE}' 未运行，自动启动中（{mode}模式）...")
+    ok, msg = start_emulator(EMULATOR_INSTANCE)
+    if not ok:
+        print(f"  ✗ 启动模拟器失败: {msg}")
+        return
+    print(f"  {msg}")
+    print(f"  等待模拟器上线 / hdc 识别设备（最多 {EMU_START_TIMEOUT}s，按 Ctrl+C 可中断）...")
+    try:
+        key, msg = wait_device_online(EMU_START_TIMEOUT, EMULATOR_INSTANCE, stop_flag)
+    except KeyboardInterrupt:
+        # handler 已设置 stop_flag，标记一下让主循环直接进清理
+        if stop_flag is not None:
+            stop_flag["stop"] = True
+        print(f"\n  ⚠ 用户中断等待，模拟器可能仍在后台启动中")
+        return
+    if key:
+        print(f"  ✓ 模拟器已上线 — {msg}")
+    else:
+        print(f"  ⚠ {msg}")
+        print(f"    fold-server 继续运行，但 hdc 转发可能失败")
+        print(f"    模拟器就绪后重启本服务即可重建转发")
+
+
 def setup_fport():
     """建立 hdc 反向端口转发（rport）：模拟器内访问 127.0.0.1:DEVICE_PORT → 宿主机:PORT
     用不同端口避免与 fold-server 监听冲突。
-    所有平台通用，模拟器内统一用 127.0.0.1 访问本服务。"""
+    多设备时自动用 -t <connect-key> 路由到目标实例。"""
+    global CURRENT_CONNECT_KEY
     try:
         # 确认 hdc 可用
-        check = subprocess.run([HDC, "version"] if platform.system() != "Windows" else f'"{HDC}" version',
-                               capture_output=True, text=True, timeout=5,
-                               shell=(platform.system() == "Windows"))
-        if check.returncode != 0:
+        rc, out = run_cmd([HDC, "version"], timeout=5)
+        if rc != 0:
             print(f"  ✗ hdc 不可用: {HDC}")
-            print(f"    错误: {check.stderr}")
+            print(f"    错误: {out}")
             return False
 
+        # 确定目标设备 connect-key（0/1/多 设备三种情况）
+        key, reason = resolve_connect_key()
+        if not key:
+            print(f"  ✗ hdc 未识别到任何设备")
+            print(f"    请确认模拟器已连接：{HDC} list targets")
+            return False
+        if reason == "auto":
+            print(f"  ✓ 目标设备: {key}")
+        # reason == 'first_of_multi' 的警告已在 resolve_connect_key 里打印
+        # reason == 'env' 也打印一下
+        if reason == "env":
+            print(f"  ✓ 目标设备（HDC_CONNECT_KEY 指定）: {key}")
+
         # 清除可能存在的旧转发（fport rm 能同时清 fport 和 rport 建的转发）
-        # 注意：参数间用空格，不加引号；rm 时端口组合是 "源 目标"
-        for cmd_rm in [
-            f'fport rm tcp:{DEVICE_PORT} tcp:{PORT}',
-            f'fport rm tcp:{DEVICE_PORT} tcp:{DEVICE_PORT}',
-            f'fport rm tcp:{PORT} tcp:{DEVICE_PORT}',
+        # 注意：rm 时端口组合是 "源 目标"
+        for rm_args in [
+            ["fport", "rm", f"tcp:{DEVICE_PORT}", f"tcp:{PORT}"],
+            ["fport", "rm", f"tcp:{DEVICE_PORT}", f"tcp:{DEVICE_PORT}"],
+            ["fport", "rm", f"tcp:{PORT}", f"tcp:{DEVICE_PORT}"],
         ]:
-            if platform.system() == "Windows":
-                subprocess.run(f'"{HDC}" {cmd_rm}', capture_output=True, text=True, timeout=5, shell=True)
-            else:
-                subprocess.run([HDC] + cmd_rm.split(), capture_output=True, text=True, timeout=5)
+            hdc_cmd(rm_args, timeout=5)  # 忽略返回，清旧的而已
 
         # 建立 rport（设备内 DEVICE_PORT → 宿主机 PORT）
-        cmd_rport = f'rport tcp:{DEVICE_PORT} tcp:{PORT}'
-        if platform.system() == "Windows":
-            result = subprocess.run(f'"{HDC}" {cmd_rport}', capture_output=True, text=True, timeout=5, shell=True)
-        else:
-            result = subprocess.run([HDC] + cmd_rport.split(), capture_output=True, text=True, timeout=5)
-
-        output = (result.stdout or "") + (result.stderr or "")
-        if "OK" in output:
+        rc, output = hdc_cmd(["rport", f"tcp:{DEVICE_PORT}", f"tcp:{PORT}"], timeout=5)
+        if rc == 0 and "OK" in output:
             return True
         else:
             print(f"  ✗ hdc rport 建立失败: {output}")
-            print(f"    请确认模拟器已连接：{HDC} list target")
+            print(f"    请确认模拟器已连接：{HDC} list targets")
             return False
     except FileNotFoundError:
         print(f"  ✗ 找不到 hdc: {HDC}")
@@ -373,45 +629,107 @@ def main():
     print_paths()
     print("")
 
-    # ===== 先启动 HTTP 服务（让健康检查尽早通过，不被 setup_fport 阻塞）=====
+    # ===== 先启动 HTTP 服务（让健康检查尽早通过，不被后续步骤阻塞）=====
     server = http.server.HTTPServer(("0.0.0.0", PORT), FoldHandler)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     print(f"  HTTP 服务已就绪，监听端口 {PORT}")
     print("")
 
-    # ===== 再建立 hdc 端口转发（不阻塞 /health，失败时日志可见）=====
-    print("  建立 hdc 端口转发...")
-    if setup_fport():
-        print(f"  ✓ hdc 反向端口转发已建立（rport: 模拟器内 127.0.0.1:{DEVICE_PORT} → 宿主机:{PORT}）")
-    else:
-        print(f"  ⚠ hdc 端口转发失败 — 设备端可能无法连接 fold-server")
-        print(f"    请确认模拟器已连接（hdc list target）并重试")
+    # ===== 尽早注册 Ctrl-C 处理（在任何可能阻塞的步骤之前）=====
+    # 这样无论用户在「自动启动模拟器等待」「建立转发」「主循环」哪个阶段按 Ctrl-C，
+    # 都能立即设置 stop_flag，主线程在下个字节码间隙退出并进入清理。
+    stop_flag = {"stop": False, "server": None, "server_thread": None}
+    stop_flag["server"] = server
+    stop_flag["server_thread"] = server_thread
+
+    def _request_stop(signum=None, frame=None):
+        stop_flag["stop"] = True
+
+    signal.signal(signal.SIGINT, _request_stop)
+    if platform.system() != "Windows":
+        signal.signal(signal.SIGTERM, _request_stop)
+
+    # ===== 确保目标模拟器实例在运行（没跑就自动拉起，等设备上线）=====
+    # 此处若用户按 Ctrl-C，全局 handler 置 stop_flag，wait_device_online 内的
+    # sleep_interruptible 在 0.05s 内返回，本函数随即返回，下面检查 stop_flag 跳过后续步骤。
+    print("  检查模拟器实例状态...")
+    if not stop_flag["stop"]:
+        ensure_emulator_running(stop_flag)
     print("")
+
+    # 若等待期间已按 Ctrl-C，跳过转发建立，直接进清理
+    if not stop_flag["stop"]:
+        # ===== 再建立 hdc 端口转发（多设备自动用 -t 路由）=====
+        print("  建立 hdc 端口转发...")
+        if setup_fport():
+            print(f"  ✓ hdc 反向端口转发已建立（rport: 模拟器内 127.0.0.1:{DEVICE_PORT} → 宿主机:{PORT}）")
+        else:
+            print(f"  ⚠ hdc 端口转发失败 — 设备端可能无法连接 fold-server")
+            print(f"    请确认模拟器已连接（hdc list target）并重试")
+        print("")
 
     print(f"  连接方式: 模拟器内访问 127.0.0.1:{DEVICE_PORT}（通过 rport 转发）")
     print(f"  API: GET /fold?state=open|half-open|close")
     print(f"  API: GET /rotation?direction=left|right")
-    print(f"  按 Ctrl+C 停止")
+    print(f"  按 Ctrl+C 停止（会自动清理端口转发 + 残留进程）")
     print("=" * 50)
     sys.stdout.flush()
 
-    # 主线程等待 Ctrl+C
+    # ===== 主循环：极短 sleep 轮询 stop_flag =====
+    # handler 在 HTTP 启动后就已注册（见上方），无论用户在哪个阶段按 Ctrl-C，
+    # stop_flag 都会被置 True，主循环每 0.05s 检查一次立即退出。
+    # 不用 server_thread.join()（Windows 下不响应 Ctrl-C 会卡死），
+    # 不用 Event.wait()（macOS 后台进程下不被 SIGINT 打断）。
     try:
-        server_thread.join()
-    except KeyboardInterrupt:
-        print("\n服务已停止")
-        # 清理端口转发
-        try:
-            cmd_rm = f'fport rm tcp:{DEVICE_PORT} tcp:{PORT}'
-            if platform.system() == "Windows":
-                subprocess.run(f'"{HDC}" {cmd_rm}', capture_output=True, text=True, timeout=5, shell=True)
-            else:
-                subprocess.run([HDC] + cmd_rm.split(), capture_output=True, text=True, timeout=5)
-        except Exception:
-            pass
+        while not stop_flag["stop"]:
+            time.sleep(0.05)
+    finally:
+        # 无论如何都执行清理：关闭 HTTP、移除本服务建的转发、调 clean.py 收尾
+        print("\n服务已停止，开始清理...")
+        do_shutdown(server, server_thread)
+
+
+def do_shutdown(server, server_thread):
+    """退出清理：关闭 HTTP 服务 + 清 hdc 转发 + 调 clean.py 子进程做彻底清理。
+    放在 finally 里，保证 Ctrl-C / 异常 / kill 都能跑到。"""
+    # 1) 先停 HTTP，释放 8766 端口（避免 clean.py 误杀自己）
+    try:
         server.shutdown()
-        print("已清理，再见")
+        server.server_close()
+    except Exception:
+        pass
+    if server_thread.is_alive():
+        server_thread.join(timeout=2)
+
+    # 2) 移除本服务建立的 hdc 反向转发（多设备时也用 -t 路由）
+    try:
+        hdc_cmd(["fport", "rm", f"tcp:{DEVICE_PORT}", f"tcp:{PORT}"], timeout=5)
+        print("  ✓ 已移除 hdc 反向端口转发")
+    except Exception:
+        pass
+
+    # 3) 调 clean.py 子进程做彻底清理（残留进程 / 残留转发 / 端口占用）
+    #    用独立子进程：它能杀掉 8766 上的残留 fold-server 而不影响本进程，
+    #    因为我们在第 1 步已释放端口、即将退出。
+    try:
+        clean_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clean.py")
+        if os.path.isfile(clean_script):
+            print("  调用 clean.py 做端口/转发彻底清理...")
+            subprocess.run(
+                [sys.executable, clean_script],
+                timeout=30,
+                capture_output=False,
+            )
+        else:
+            print(f"  ⚠ clean.py 不存在（{clean_script}），跳过彻底清理")
+    except subprocess.TimeoutExpired:
+        print("  ⚠ clean.py 执行超时（30s），强制继续退出")
+    except Exception as e:
+        print(f"  ⚠ 调用 clean.py 失败: {e}")
+
+    print("已清理，再见")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

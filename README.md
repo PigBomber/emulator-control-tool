@@ -23,7 +23,16 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 ### 1. 启动折叠屏模拟器
 
-DevEco Studio 里启动折叠屏模拟器，确认 `hdc list target` 能看到。
+**无需手动启动** —— `fold-server.py` 启动时会检查目标实例状态，没在跑就自动以**无窗口模式**拉起，并轮询直到 `hdc` 识别到设备，全程在终端打印进度提示。冷启动常见 30~90s。
+
+```
+  实例 'Mate X7' 未运行，自动启动中（无窗口模式）...
+  等待模拟器上线 / hdc 识别设备（最多 120s，按 Ctrl+C 可中断）...
+  . 等待模拟器上线（1/60）
+  ✓ 模拟器已上线 — hdc 识别到设备: 127.0.0.1:5555
+```
+
+当然也可以像以前一样在 DevEco Studio 里手动启动。
 
 ### 2. 编译 / 跑测试（自动启动服务）
 
@@ -115,3 +124,13 @@ curl "http://127.0.0.1:8766/fold?state=half-open" # 悬停
 **triggerFold 连接失败**：确认 fold-server.py 在运行、`hdc list target` 能看到模拟器。重启服务会重建端口转发。
 
 **多开模拟器**：自动启动走的是默认实例；需指定时用手动方式 `python3 fold-server.py "实例名"`。
+
+**多个设备同时连接（hdc 报 `need connect-key`）**：多设备在线时，`fold-server` 会自动用 `-t <connect-key>` 路由到目标设备，默认选 `hdc list targets` 的第一台并给出警告。如需指定，设置环境变量 `HDC_CONNECT_KEY`（值为 `hdc list targets` 输出的 connect-key，如 `127.0.0.1:5555`）后重启服务。
+
+**自动启动相关环境变量**：
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `FOLD_HEADLESS` | `1` | `1`=无窗口启动（默认，省资源）；`0`=带 GUI 窗口（调试观察折叠动画） |
+| `FOLD_EMU_TIMEOUT` | `120` | 等待模拟器上线超时秒数（冷启动慢时调大） |
+| `HDC_CONNECT_KEY` | 空 | 多设备时显式指定目标设备的 connect-key |
