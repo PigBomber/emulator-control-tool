@@ -471,11 +471,14 @@ def sleep_interruptible(seconds, stop_flag=None):
 
 
 def wait_device_online(timeout=EMU_START_TIMEOUT, instance_name=None, stop_flag=None):
-    """轮询直到 hdc 能识别到设备 + 实例 isRunning=true。
+    """轮询直到「指定实例」对应的设备上线（hdc 能识别到它的 connect-key）。
+    多设备场景下必须精确等 instance_name 那台，不能见任意设备就返回——
+    否则若另一台已在跑，会误把它的 connect-key 当成本实例。
     返回 (connect_key_or_None, message)。Ctrl-C 或 stop_flag 可即时中断。"""
     deadline = time.time() + timeout
     attempt = 0
     last_running = None
+    total_attempts = max(1, timeout // EMU_POLL_INTERVAL)
     while time.time() < deadline:
         # 用户中途 Ctrl-C：立即退出
         if stop_flag is not None and stop_flag.get("stop"):
@@ -486,13 +489,19 @@ def wait_device_online(timeout=EMU_START_TIMEOUT, instance_name=None, stop_flag=
             inst = find_instance_status(instance_name)
             if inst:
                 last_running = inst["isRunning"]
-        # 2) hdc 是否识别到设备
-        keys = list_targets()
-        if keys:
-            return keys[0], f"hdc 识别到设备: {keys[0]}"
+        # 2) 精确等 instance_name 对应的 connect-key 出现
+        if instance_name:
+            inst_map = build_instance_connectkey_map()
+            target_key = inst_map.get(instance_name)
+            if target_key:
+                return target_key, f"实例 '{instance_name}' 已上线: {target_key}"
+        else:
+            # 没指定实例名：退化为"任意设备上线"（兼容老用法）
+            keys = list_targets()
+            if keys:
+                return keys[0], f"hdc 识别到设备: {keys[0]}"
         # 终端进度：每轮打一个点
         running_hint = "" if last_running is None else (f" [实例进程 {'就绪' if last_running else '启动中'}]")
-        total_attempts = max(1, timeout // EMU_POLL_INTERVAL)
         print(f"  . 等待模拟器上线{running_hint}（{attempt}/{total_attempts}）")
         # 可中断 sleep（0.05s 粒度，Ctrl-C 在此窗口内触发）
         sleep_interruptible(EMU_POLL_INTERVAL, stop_flag)
