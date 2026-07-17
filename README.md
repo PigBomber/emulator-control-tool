@@ -19,16 +19,9 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 ---
 
-## 配置文件（可选）
+## 配置文件
 
-所有可调项支持 **config.py** 配置文件（纯 Python 变量，直接改值即可），避免每次命令行带参数或设环境变量。
-
-```bash
-cp config.example.py config.py   # 复制模板
-# 编辑 config.py，改完重启 fold-server.py / clean.py 生效
-```
-
-可配置项：模拟器实例名、窗口模式、启动超时、端口、多设备 connect-key、emulator/hdc 路径。详见 `config.example.py` 注释。
+所有可调项集中在 **config.py**（纯 Python 变量，直接改值即可），改完重启 `fold-server.py` / `clean.py` 生效。本文件入库，团队共享默认值。
 
 **优先级**（高 → 低）：
 
@@ -47,7 +40,7 @@ cp config.example.py config.py   # 复制模板
 | Emulator 路径 | — | `EMULATOR_PATH` | `EMULATOR_PATH` | 自动探测 |
 | hdc 路径 | — | `HDC_PATH` | `HDC_PATH` | 自动探测 |
 
-> `config.py` 是本机私有配置，已加入 `.gitignore`；`config.example.py` 是入库模板。
+个人要临时用不同值，不必改 config.py，用环境变量或命令行参数覆盖即可。
 
 ---
 

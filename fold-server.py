@@ -27,44 +27,10 @@ import platform
 import threading
 import time
 import signal
+import config as _CFG  # 同目录 config.py（入库默认配置）
 
 # ============ 配置加载 ============
 # 优先级（高 → 低）：命令行参数 > 环境变量 > config.py > 代码默认值
-# config.py 为本机私有（已 .gitignore），config.example.py 是入库模板。
-
-
-def _config_path():
-    """config.py 路径：与脚本同目录。存在返回路径，否则 None。"""
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
-    return p if os.path.isfile(p) else None
-
-
-def _load_config_module():
-    """import config.py（若存在）。失败/不存在返回空对象，不抛异常。"""
-    p = _config_path()
-    if not p:
-        # 没有配置文件，返回一个带默认值的空壳对象
-        class _Empty:
-            pass
-        return _Empty()
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("_fold_config", p)
-    mod = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(mod)
-    except Exception as e:
-        print(f"  ⚠ 读取 config.py 失败（{e}），将使用默认值")
-        import types
-        mod = types.SimpleNamespace()
-    return mod
-
-
-_CFG = _load_config_module()
-
-
-def _cfg_value(name, default):
-    """从 config.py 取名为 name 的属性，没有就用 default。"""
-    return getattr(_CFG, name, default)
 
 
 def _pick(env_key, cfg_name, default):
@@ -92,8 +58,8 @@ else:
 EMU_START_TIMEOUT = int(_pick("FOLD_EMU_TIMEOUT", "EMU_START_TIMEOUT", 120))
 EMU_POLL_INTERVAL = 2  # 轮询设备上线间隔秒数（固定，不开放配置）
 
-PORT = int(_cfg_value("PORT", 8766))
-DEVICE_PORT = int(_cfg_value("DEVICE_PORT", 8765))
+PORT = getattr(_CFG, "PORT", 8766)
+DEVICE_PORT = getattr(_CFG, "DEVICE_PORT", 8765)
 EMULATOR_PATH_OVERRIDE = _pick("EMULATOR_PATH", "EMULATOR_PATH", "")
 HDC_PATH_OVERRIDE = _pick("HDC_PATH", "HDC_PATH", "")
 CONNECT_KEY_CFG = _pick("HDC_CONNECT_KEY", "HDC_CONNECT_KEY", None)
@@ -157,10 +123,10 @@ def find_emulator():
     # emulator 二进制名
     exe_name = "emulator.exe" if platform.system() == "Windows" else "Emulator"
 
-    # 候选路径（最前面优先：环境变量/config.ini 覆盖 > DevEco 根目录 > PATH）
+    # 候选路径（最前面优先：环境变量/config.py 覆盖 > DevEco 根目录 > PATH）
     candidates = []
 
-    # 1. 环境变量 EMULATOR_PATH / config.ini [paths] emulator_path 直接指定（最优先）
+    # 1. 环境变量 EMULATOR_PATH / config.py EMULATOR_PATH 直接指定（最优先）
     if EMULATOR_PATH_OVERRIDE:
         candidates.append(EMULATOR_PATH_OVERRIDE)
 
@@ -193,7 +159,7 @@ def find_hdc():
 
     candidates = []
 
-    # 1. 环境变量 HDC_PATH / config.ini [paths] hdc_path 直接指定（最优先）
+    # 1. 环境变量 HDC_PATH / config.py HDC_PATH 直接指定（最优先）
     if HDC_PATH_OVERRIDE:
         candidates.append(HDC_PATH_OVERRIDE)
         candidates.append(os.path.join(HDC_PATH_OVERRIDE, exe_name))
@@ -222,7 +188,7 @@ def find_hdc():
 EMULATOR = find_emulator()
 HDC = find_hdc()
 # EMULATOR_INSTANCE 已在配置加载区（第 82 行）由 _pick 统一设置，
-# 此处不再重复赋值，避免覆盖 config.ini 的值。
+# 此处不再重复赋值，避免覆盖 config.py 的值。
 
 # 启动时打印探测到的路径（方便排查）
 def print_paths():
@@ -357,7 +323,7 @@ def resolve_connect_key():
     策略：
       0 个设备 → 返回 (None, 'no_device')
       1 个设备 → 返回 (key, 'auto')  即便单设备也显式带 -t 更稳
-      多个设备 → 尝试用 config.ini/环境变量指定的 connect-key，否则取第一个并警告
+      多个设备 → 尝试用 config.py/环境变量指定的 connect-key，否则取第一个并警告
     返回 (connect_key_or_None, reason)。"""
     global CURRENT_CONNECT_KEY
     keys = list_targets()
@@ -495,7 +461,7 @@ def setup_fport():
         # reason == 'first_of_multi' 的警告已在 resolve_connect_key 里打印
         # reason == 'configured' 也打印一下
         if reason == "configured":
-            print(f"  ✓ 目标设备（config.ini/环境变量 指定）: {key}")
+            print(f"  ✓ 目标设备（config.py/环境变量 指定）: {key}")
 
         # 清除可能存在的旧转发（fport rm 能同时清 fport 和 rport 建的转发）
         # 注意：rm 时端口组合是 "源 目标"
@@ -681,8 +647,7 @@ def main():
     print(f"  监听端口: {PORT}")
     print(f"  窗口模式: {'无窗口' if HEADLESS else '带 GUI 窗口'}")
     print(f"  日志文件: {log_path}")
-    cfg_p = _config_path()
-    print(f"  配置文件: {cfg_p or '未使用（可用 config.example.py 创建 config.py）'}")
+    print(f"  配置文件: {os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.py')}")
     print_paths()
     print("")
 
