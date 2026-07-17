@@ -27,21 +27,70 @@ import platform
 import threading
 import time
 import signal
+import configparser
 
-# ============ 配置 ============
+# ============ 配置加载 ============
+# 优先级（高 → 低）：命令行参数 > 环境变量 > config.ini > 代码默认值
+# config.ini 为本机私有（已 .gitignore），config.ini.example 是入库模板。
+
+
+def _config_path():
+    """config.ini 路径：与脚本同目录。不存在则返回 None。"""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+    return p if os.path.isfile(p) else None
+
+
+def load_config():
+    """读取 config.ini，返回 dict（section->key->value），文件不存在返回 {}。
+    所有值均为字符串原样，由调用方按需转换。"""
+    p = _config_path()
+    if not p:
+        return {}
+    parser = configparser.ConfigParser()
+    parser.read(p, encoding="utf-8")
+    out = {}
+    for section in parser.sections():
+        out[section] = dict(parser.items(section))
+    return out
+
+
+_CFG = load_config()
+
+
+def _pick(env_key, section, cfg_key, default):
+    """统一优先级解析单个配置项：
+    环境变量 > config.ini[section][cfg_key] > default。
+    env_key 为 None 表示该项不支持环境变量。"""
+    if env_key:
+        env_val = os.environ.get(env_key)
+        if env_val is not None and env_val != "":
+            return env_val
+    sect = _CFG.get(section, {})
+    ini_val = sect.get(cfg_key)
+    if ini_val is not None and ini_val.strip() != "":
+        return ini_val.strip()
+    return default
+
+
+# ---- 各配置项（命令行参数在 main() 里覆盖 EMULATOR_INSTANCE）----
 # fold-server 监听端口（宿主机）
-PORT = 8766
-# 设备内访问端口（模拟器内 FoldTrigger 访问的端口，通过 rport 转发到 PORT）
-# 用不同端口避免与 fold-server 监听冲突
-DEVICE_PORT = 8765
+PORT = int(_pick(None, "network", "server_port", 8766))
+# 设备内访问端口（通过 rport 转发到 PORT；不同端口避免监听冲突）
+DEVICE_PORT = int(_pick(None, "network", "device_port", 8765))
 
-# 模拟器自动启动相关配置（可用环境变量覆盖）
-# 窗口模式：默认带 GUI 窗口（可看折叠动画/方向），FOLD_HEADLESS=1 切无窗口（省资源/CI）
-HEADLESS = os.environ.get("FOLD_HEADLESS", "0") == "1"
-# 等待模拟器上线（hdc 识别设备）超时秒数；冷启动常见 30~90s
-EMU_START_TIMEOUT = int(os.environ.get("FOLD_EMU_TIMEOUT", "120"))
+# 模拟器实例名（命令行参数 / EMULATOR_INSTANCE / config.ini / 默认值）
+EMULATOR_INSTANCE = _pick("EMULATOR_INSTANCE", "emulator", "instance", "Mate X7")
+# 无窗口模式：true=无窗口（省资源/CI），false=带 GUI 窗口（默认）
+HEADLESS = _pick("FOLD_HEADLESS", "emulator", "headless", "false").lower() in ("1", "true", "yes")
+# 等待模拟器上线超时秒数
+EMU_START_TIMEOUT = int(_pick("FOLD_EMU_TIMEOUT", "emulator", "start_timeout", "120"))
 # 轮询设备上线间隔秒数
 EMU_POLL_INTERVAL = 2
+
+# 多设备时显式指定的 connect-key（留空=自动）
+EMULATOR_PATH_OVERRIDE = _pick("EMULATOR_PATH", "paths", "emulator_path", "")
+HDC_PATH_OVERRIDE = _pick("HDC_PATH", "paths", "hdc_path", "")
+CONNECT_KEY_CFG = _pick("HDC_CONNECT_KEY", "network", "connect_key", "")
 
 # 运行时确定的当前目标设备 connect-key（多设备时用于 hdc -t 路由）
 # None 表示尚未确定 / 单设备时 hdc 无需 -t
@@ -102,10 +151,14 @@ def find_emulator():
     # emulator 二进制名
     exe_name = "emulator.exe" if platform.system() == "Windows" else "Emulator"
 
-    # 候选路径
+    # 候选路径（最前面优先：环境变量/config.ini 覆盖 > DevEco 根目录 > PATH）
     candidates = []
 
-    # 1. 从 DevEco 根目录找
+    # 1. 环境变量 EMULATOR_PATH / config.ini [paths] emulator_path 直接指定（最优先）
+    if EMULATOR_PATH_OVERRIDE:
+        candidates.append(EMULATOR_PATH_OVERRIDE)
+
+    # 2. 从 DevEco 根目录找
     deveco_root = find_deveco_root()
     if deveco_root:
         candidates.extend([
@@ -113,11 +166,6 @@ def find_emulator():
             os.path.join(deveco_root, "Contents", "tools", "emulator", exe_name),
             os.path.join(deveco_root, "sdk", "tools", "emulator", exe_name),
         ])
-
-    # 2. 环境变量 EMULATOR_PATH 直接指定
-    env_path = os.environ.get("EMULATOR_PATH", "")
-    if env_path:
-        candidates.append(env_path)
 
     # 3. PATH 里找
     path_dirs = os.environ.get("PATH", "").split(os.pathsep)
@@ -139,7 +187,12 @@ def find_hdc():
 
     candidates = []
 
-    # 1. 从 DevEco 根目录找（sdk/default/openharmony/toolchains/hdc）
+    # 1. 环境变量 HDC_PATH / config.ini [paths] hdc_path 直接指定（最优先）
+    if HDC_PATH_OVERRIDE:
+        candidates.append(HDC_PATH_OVERRIDE)
+        candidates.append(os.path.join(HDC_PATH_OVERRIDE, exe_name))
+
+    # 2. 从 DevEco 根目录找（sdk/default/openharmony/toolchains/hdc）
     deveco_root = find_deveco_root()
     if deveco_root:
         candidates.extend([
@@ -147,12 +200,6 @@ def find_hdc():
             os.path.join(deveco_root, "Contents", "sdk", "default", "openharmony", "toolchains", exe_name),
             os.path.join(deveco_root, "sdk", "openharmony", "toolchains", exe_name),
         ])
-
-    # 2. 环境变量 HDC_PATH 直接指定
-    env_path = os.environ.get("HDC_PATH", "")
-    if env_path:
-        candidates.append(env_path)
-        candidates.append(os.path.join(env_path, exe_name))
 
     # 3. PATH 里找
     path_dirs = os.environ.get("PATH", "").split(os.pathsep)
@@ -168,7 +215,8 @@ def find_hdc():
 
 EMULATOR = find_emulator()
 HDC = find_hdc()
-EMULATOR_INSTANCE = os.environ.get("EMULATOR_INSTANCE", "Mate X7")
+# EMULATOR_INSTANCE 已在配置加载区（第 82 行）由 _pick 统一设置，
+# 此处不再重复赋值，避免覆盖 config.ini 的值。
 
 # 启动时打印探测到的路径（方便排查）
 def print_paths():
@@ -303,7 +351,7 @@ def resolve_connect_key():
     策略：
       0 个设备 → 返回 (None, 'no_device')
       1 个设备 → 返回 (key, 'auto')  即便单设备也显式带 -t 更稳
-      多个设备 → 尝试用环境变量 HDC_CONNECT_KEY，否则取第一个并警告
+      多个设备 → 尝试用 config.ini/环境变量指定的 connect-key，否则取第一个并警告
     返回 (connect_key_or_None, reason)。"""
     global CURRENT_CONNECT_KEY
     keys = list_targets()
@@ -313,11 +361,11 @@ def resolve_connect_key():
     if len(keys) == 1:
         CURRENT_CONNECT_KEY = keys[0]
         return keys[0], "auto"
-    # 多设备：优先用环境变量指定的 connect-key
-    env_key = os.environ.get("HDC_CONNECT_KEY", "").strip()
-    if env_key and env_key in keys:
-        CURRENT_CONNECT_KEY = env_key
-        return env_key, "env"
+    # 多设备：优先用 config.ini/环境变量指定的 connect-key（CONNECT_KEY_CFG 已含优先级）
+    cfg_key = (CONNECT_KEY_CFG or "").strip()
+    if cfg_key and cfg_key in keys:
+        CURRENT_CONNECT_KEY = cfg_key
+        return cfg_key, "configured"
     # 未明确指定：默认取第一个，但强烈提示用户多设备需指定
     CURRENT_CONNECT_KEY = keys[0]
     print(f"  ⚠ 检测到 {len(keys)} 台设备: {keys}")
@@ -439,9 +487,9 @@ def setup_fport():
         if reason == "auto":
             print(f"  ✓ 目标设备: {key}")
         # reason == 'first_of_multi' 的警告已在 resolve_connect_key 里打印
-        # reason == 'env' 也打印一下
-        if reason == "env":
-            print(f"  ✓ 目标设备（HDC_CONNECT_KEY 指定）: {key}")
+        # reason == 'configured' 也打印一下
+        if reason == "configured":
+            print(f"  ✓ 目标设备（config.ini/环境变量 指定）: {key}")
 
         # 清除可能存在的旧转发（fport rm 能同时清 fport 和 rport 建的转发）
         # 注意：rm 时端口组合是 "源 目标"
@@ -625,7 +673,10 @@ def main():
     print(f"  hdc: {HDC}")
     print(f"  模拟器实例: {EMULATOR_INSTANCE}")
     print(f"  监听端口: {PORT}")
+    print(f"  窗口模式: {'无窗口' if HEADLESS else '带 GUI 窗口'}")
     print(f"  日志文件: {log_path}")
+    cfg_p = _config_path()
+    print(f"  配置文件: {cfg_p or '未使用（可用 config.ini.example 创建 config.ini）'}")
     print_paths()
     print("")
 

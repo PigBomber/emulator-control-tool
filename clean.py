@@ -21,10 +21,28 @@ import sys
 import socket
 import platform
 import subprocess
+import configparser
 
-# ============ 配置（与 fold-server.py 保持一致）============
-PORT = 8766
-DEVICE_PORT = 8765
+# ============ 配置（优先读 config.ini，与 fold-server.py 保持一致）============
+
+
+def _load_ports():
+    """从 config.ini 读端口，文件不存在则用默认值。与 fold-server.py 一致。"""
+    cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+    default_port, default_device_port = 8766, 8765
+    if not os.path.isfile(cfg_path):
+        return default_port, default_device_port
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(cfg_path, encoding="utf-8")
+        port = int(parser.get("network", "server_port", fallback=default_port))
+        device_port = int(parser.get("network", "device_port", fallback=default_device_port))
+        return port, device_port
+    except Exception:
+        return default_port, default_device_port
+
+
+PORT, DEVICE_PORT = _load_ports()
 
 
 def is_windows():
