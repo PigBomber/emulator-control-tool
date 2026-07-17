@@ -36,8 +36,8 @@ PORT = 8766
 DEVICE_PORT = 8765
 
 # 模拟器自动启动相关配置（可用环境变量覆盖）
-# 无窗口模式：默认 True，FOLD_HEADLESS=0 可改为带窗口（调试用）
-HEADLESS = os.environ.get("FOLD_HEADLESS", "1") != "0"
+# 窗口模式：默认带 GUI 窗口（可看折叠动画/方向），FOLD_HEADLESS=1 切无窗口（省资源/CI）
+HEADLESS = os.environ.get("FOLD_HEADLESS", "0") == "1"
 # 等待模拟器上线（hdc 识别设备）超时秒数；冷启动常见 30~90s
 EMU_START_TIMEOUT = int(os.environ.get("FOLD_EMU_TIMEOUT", "120"))
 # 轮询设备上线间隔秒数
