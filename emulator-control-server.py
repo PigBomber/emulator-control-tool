@@ -6,8 +6,8 @@
 #       测试代码内的 triggerFold() 通过 HTTP 直接调用本服务，同步等待结果。
 #
 # 用法：
-#   python3 scripts/fold-server.py
-#   python3 scripts/fold-server.py "Pura X"   # 指定实例名
+#   python3 scripts/emulator-control-server.py
+#   python3 scripts/emulator-control-server.py "Pura X"   # 指定实例名
 #
 #   保持运行，测试代码的 triggerFold('half-open') 会请求本服务。
 #
@@ -552,7 +552,7 @@ def ensure_emulator_running(stop_flag=None):
         names = list_instance_names()
         if names:
             print(f"    可用实例: {', '.join(names)}")
-        print(f"    用法: python3 fold-server.py \"<实例名>\"")
+        print(f"    用法: python3 emulator-control-server.py \"<实例名>\"")
         return
 
     if inst["isRunning"]:
@@ -580,13 +580,13 @@ def ensure_emulator_running(stop_flag=None):
         print(f"  ✓ 模拟器已上线 — {msg}")
     else:
         print(f"  ⚠ {msg}")
-        print(f"    fold-server 继续运行，但 hdc 转发可能失败")
+        print(f"    emulator-control-server 继续运行，但 hdc 转发可能失败")
         print(f"    模拟器就绪后重启本服务即可重建转发")
 
 
 def setup_fport():
     """建立 hdc 反向端口转发（rport）：模拟器内访问 127.0.0.1:DEVICE_PORT → 宿主机:PORT
-    用不同端口避免与 fold-server 监听冲突。
+    用不同端口避免与 emulator-control-server 监听冲突。
     多设备时自动用 -t <connect-key> 路由到目标实例。"""
     global CURRENT_CONNECT_KEY
     try:
@@ -781,7 +781,7 @@ def main():
         EMULATOR_INSTANCE = sys.argv[1]
 
     # ===== 日志落盘 + 终端输出（之前所有 print 写入文件，现在同时写终端）=====
-    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fold-server.log')
+    log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'emulator-control-server.log')
     log_fp = open(log_path, 'w', buffering=1, encoding='utf-8')  # 行缓冲，实时落盘，UTF-8 避免 Windows 乱码
     sys.stdout = Tee(log_fp, sys.stdout)   # 既写日志文件，也写终端
     sys.stderr = Tee(log_fp, sys.stderr)
@@ -835,7 +835,7 @@ def main():
         if setup_fport():
             print(f"  ✓ hdc 反向端口转发已建立（rport: 模拟器内 127.0.0.1:{DEVICE_PORT} → 宿主机:{PORT}）")
         else:
-            print(f"  ⚠ hdc 端口转发失败 — 设备端可能无法连接 fold-server")
+            print(f"  ⚠ hdc 端口转发失败 — 设备端可能无法连接 emulator-control-server")
             print(f"    请确认模拟器已连接（hdc list target）并重试")
         print("")
 
@@ -880,7 +880,7 @@ def do_shutdown(server, server_thread):
         pass
 
     # 3) 调 clean.py 子进程做彻底清理（残留进程 / 残留转发 / 端口占用）
-    #    用独立子进程：它能杀掉 8766 上的残留 fold-server 而不影响本进程，
+    #    用独立子进程：它能杀掉 8766 上的残留 emulator-control-server 而不影响本进程，
     #    因为我们在第 1 步已释放端口、即将退出。
     try:
         clean_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "clean.py")

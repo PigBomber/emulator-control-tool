@@ -1,0 +1,33 @@
+==================================================
+折叠控制 HTTP 服务启动
+  平台: Darwin
+  Emulator: /Applications/DevEco-Studio.app/Contents/tools/emulator/Emulator
+  hdc: /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
+  模拟器实例: Mate X7
+  监听端口: 8766
+  窗口模式: 带 GUI 窗口
+  日志文件: /Users/zzz/robot/fold-control-tool/fold-server.log
+  路径探测:
+    DevEco 根目录: /Applications/DevEco-Studio.app/Contents
+    Emulator: /Applications/DevEco-Studio.app/Contents/tools/emulator/Emulator  ✓
+    hdc: /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc  ✓
+
+  HTTP 服务已就绪，监听端口 8766
+
+  检查模拟器实例状态...
+  ✓ 实例 'Mate X7' 已在运行
+
+  建立 hdc 端口转发...
+  ✓ 目标设备: 127.0.0.1:5555
+  ✓ hdc 反向端口转发已建立（rport: 模拟器内 127.0.0.1:8765 → 宿主机:8766）
+
+  连接方式: 模拟器内访问 127.0.0.1:8765（通过 rport 转发）
+  API: GET /fold?state=open|half-open|close
+  API: GET /rotation?direction=left|right
+  按 Ctrl+C 停止（会自动清理端口转发 + 残留进程）
+==================================================
+
+服务已停止，开始清理...
+  ✓ 已移除 hdc 反向端口转发
+  调用 clean.py 做端口/转发彻底清理...
+已清理，再见

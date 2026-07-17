@@ -3,11 +3,11 @@
 HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 包含三部分：
-- `fold-server.py` —— 宿主机 HTTP 服务，执行 emulator 折叠命令
+- `emulator-control-server.py` —— 宿主机 HTTP 服务，执行 emulator 折叠命令
 - `FoldTrigger.ets` —— ohosTest 测试侧封装，用例里直接调用
 - `config.py` —— 集中配置（实例名/端口/窗口模式等）
 
-链路：`用例 → FoldTrigger.ets → hdc rport → fold-server.py → emulator`
+链路：`用例 → FoldTrigger.ets → hdc rport → emulator-control-server.py → emulator`
 
 ---
 
@@ -21,7 +21,7 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 ## 配置文件
 
-所有可调项集中在 **config.py**（纯 Python 变量，直接改值即可），改完重启 `fold-server.py` / `clean.py` 生效。本文件入库，团队共享默认值。
+所有可调项集中在 **config.py**（纯 Python 变量，直接改值即可），改完重启 `emulator-control-server.py` / `clean.py` 生效。本文件入库，团队共享默认值。
 
 **优先级**（高 → 低）：
 
@@ -31,7 +31,7 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 | 配置项 | 命令行 | 环境变量 | config.py 变量 | 默认 |
 |--------|--------|----------|----------------|------|
-| 模拟器实例名 | `python3 fold-server.py "Pura X"` | `EMULATOR_INSTANCE` | `EMULATOR_INSTANCE` | `Mate X7` |
+| 模拟器实例名 | `python3 emulator-control-server.py "Pura X"` | `EMULATOR_INSTANCE` | `EMULATOR_INSTANCE` | `Mate X7` |
 | 窗口模式 | — | `FOLD_HEADLESS` | `HEADLESS` | 带窗口 |
 | 启动超时 | — | `FOLD_EMU_TIMEOUT` | `EMU_START_TIMEOUT` | `120` |
 | 服务端口 | — | — | `PORT` | `8766` |
@@ -48,7 +48,7 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 ### 1. 启动折叠屏模拟器
 
-**无需手动启动** —— `fold-server.py` 启动时会检查目标实例状态，没在跑就自动拉起，并轮询直到 `hdc` 识别到设备，全程在终端打印进度提示。冷启动常见 30~90s。
+**无需手动启动** —— `emulator-control-server.py` 启动时会检查目标实例状态，没在跑就自动拉起，并轮询直到 `hdc` 识别到设备，全程在终端打印进度提示。冷启动常见 30~90s。
 
 默认**带 GUI 窗口**启动（可观察折叠动画/方向）；CI 或不需要画面时设 `FOLD_HEADLESS=1` 切无窗口。
 
@@ -61,16 +61,16 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 当然也可以像以前一样在 DevEco Studio 里手动启动。
 
-### 2. 启动 fold-server（手动）
+### 2. 启动 emulator-control-server（手动）
 
-跑测试前需要先手动启动 fold-server（已不再随 hvigor 自动启动）：
+跑测试前需要先手动启动 emulator-control-server（已不再随 hvigor 自动启动）：
 
 ```bash
-python3 fold-server.py              # 用 config.py 里的实例名
-python3 fold-server.py "Mate X7"    # 或命令行临时指定实例名
+python3 emulator-control-server.py              # 用 config.py 里的实例名
+python3 emulator-control-server.py "Mate X7"    # 或命令行临时指定实例名
 ```
 
-启动后保持运行，测试代码的 `triggerFold('half-open')` 会请求本服务。启动日志写入 `fold-server.log`（排查时查看）。按 Ctrl+C 停止（会自动清理端口转发 + 残留进程）。
+启动后保持运行，测试代码的 `triggerFold('half-open')` 会请求本服务。启动日志写入 `emulator-control-server.log`（排查时查看）。按 Ctrl+C 停止（会自动清理端口转发 + 残留进程）。
 
 ### 3. 测试侧调用
 
@@ -125,11 +125,11 @@ curl "http://127.0.0.1:8766/fold?state=half-open" # 悬停
 
 **找不到 emulator / hdc**：设置环境变量 `DEVECO_SDK_HOME`（SDK 路径）、`HDC_PATH`（hdc 路径），或把它们加入 PATH。
 
-**triggerFold 连接失败**：确认 fold-server.py 在运行、`hdc list target` 能看到模拟器。重启服务会重建端口转发。
+**triggerFold 连接失败**：确认 emulator-control-server.py 在运行、`hdc list target` 能看到模拟器。重启服务会重建端口转发。
 
 **多开模拟器**：在 config.py 设 `EMULATOR_INSTANCE = "实例名"` 指定要控制哪一台。多设备同时在线时，服务会自动把实例名映射到对应的 connect-key（靠 Emulator 进程的监听端口），精确路由到目标设备，不会误连到另一台。
 
-**多个设备同时连接（hdc 报 `need connect-key`）**：多设备在线时，`fold-server` 自动用 `-t <connect-key>` 路由到目标设备，按以下优先级定位：
+**多个设备同时连接（hdc 报 `need connect-key`）**：多设备在线时，`emulator-control-server` 自动用 `-t <connect-key>` 路由到目标设备，按以下优先级定位：
 1. 自动映射：根据 `EMULATOR_INSTANCE` 实例名找到对应 connect-key（推荐，多开时只需改实例名）
 2. 显式指定：环境变量 `HDC_CONNECT_KEY` 或 config.py 的 `HDC_CONNECT_KEY`（值为 `hdc list targets` 的 connect-key，如 `127.0.0.1:5555`）
 3. 兜底：取第一台并警告

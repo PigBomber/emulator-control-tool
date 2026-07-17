@@ -2,11 +2,11 @@
 #
 # 折叠屏测试 - 端口与进程清理脚本（支持 Mac/Windows）
 #
-# 适用场景：fold-server 异常退出 / 启动失败导致 8766 端口被占用、
+# 适用场景：emulator-control-server 异常退出 / 启动失败导致 8766 端口被占用、
 #           或 hdc rport 转发残留，新一次启动 bind 失败或转发冲突。
 #
 # 清理内容：
-#   1. 杀掉占用 8766 端口的残留进程（fold-server.py 或其它）
+#   1. 杀掉占用 8766 端口的残留进程（emulator-control-server.py 或其它）
 #   2. 清除 hdc 的 8765↔8766 fport/rport 残留转发
 #   3. 验证端口已释放、健康检查无响应
 #
@@ -21,9 +21,9 @@ import sys
 import socket
 import platform
 import subprocess
-import config as _CFG  # 同目录 config.py（与 fold-server.py 一致）
+import config as _CFG  # 同目录 config.py（与 emulator-control-server.py 一致）
 
-# ============ 配置（读 config.py，与 fold-server.py 保持一致）============
+# ============ 配置（读 config.py，与 emulator-control-server.py 保持一致）============
 PORT = getattr(_CFG, "PORT", 8766)
 DEVICE_PORT = getattr(_CFG, "DEVICE_PORT", 8765)
 
@@ -125,7 +125,7 @@ def clean_port(port):
 # ============ 2. hdc 端口转发清理 ============
 
 def find_hdc():
-    """探测 hdc 路径（优先用 fold-server.py 同款逻辑）。"""
+    """探测 hdc 路径（优先用 emulator-control-server.py 同款逻辑）。"""
     # 1. 直接 PATH 里找
     exe = "hdc.exe" if is_windows() else "hdc"
     rc, out = run(f"{exe} version", timeout=5)
@@ -209,7 +209,7 @@ def clean_hdc_forwards(hdc):
 # ============ 3. 健康检查验证 ============
 
 def health_check(port):
-    """检查 fold-server 是否还在响应。"""
+    """检查 emulator-control-server 是否还在响应。"""
     print(f"[3/3] 健康检查验证...")
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -220,7 +220,7 @@ def health_check(port):
         print(f"  ⚠ 端口 {port} 仍可连接，清理可能未彻底")
         return False
     except (ConnectionRefusedError, socket.timeout, OSError):
-        print(f"  ✓ 端口 {port} 已释放，fold-server 未在响应")
+        print(f"  ✓ 端口 {port} 已释放，emulator-control-server 未在响应")
         return True
 
 
@@ -228,7 +228,7 @@ def main():
     print("=" * 50)
     print("折叠屏测试 - 端口与进程清理")
     print(f"  平台: {platform.system()}")
-    print(f"  目标端口: {PORT}（fold-server） / {DEVICE_PORT}（设备侧 rport）")
+    print(f"  目标端口: {PORT}（emulator-control-server） / {DEVICE_PORT}（设备侧 rport）")
     print("=" * 50)
 
     # 1. 杀端口占用进程
@@ -242,8 +242,8 @@ def main():
     health_check(PORT)
 
     print("=" * 50)
-    print("清理完成。现在可重新启动 fold-server:")
-    print("  python3 fold-server.py")
+    print("清理完成。现在可重新启动 emulator-control-server:")
+    print("  python3 emulator-control-server.py")
     print("=" * 50)
 
 

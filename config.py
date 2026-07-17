@@ -1,5 +1,5 @@
 # ============================================================
-# fold-server 配置（直接改下面变量的值，重启 fold-server.py / clean.py 生效）
+# emulator-control-server 配置（直接改下面变量的值，重启 emulator-control-server.py / clean.py 生效）
 # ============================================================
 # 优先级（高 → 低）：命令行参数 > 环境变量 > 本文件(config.py) > 代码内默认值
 # 即本文件是默认配置，命令行/环境变量可临时覆盖，不改这里。
@@ -20,11 +20,11 @@ EMU_START_TIMEOUT = 120
 
 
 # ---- 网络 ----
-# fold-server 监听端口（宿主机）
+# emulator-control-server 监听端口（宿主机）
 PORT = 8766
 
 # 设备内访问端口（模拟器内 FoldTrigger 访问的端口，通过 rport 转发到 PORT）
-# 用不同端口避免与 fold-server 监听冲突
+# 用不同端口避免与 emulator-control-server 监听冲突
 DEVICE_PORT = 8765
 
 # 多设备时显式指定目标设备的 connect-key（hdc list targets 的输出，如 127.0.0.1:5555）
