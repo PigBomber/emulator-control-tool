@@ -21,33 +21,33 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 ## 配置文件（可选）
 
-所有可调项支持 **config.ini** 配置文件，避免每次命令行带参数或设环境变量。
+所有可调项支持 **config.py** 配置文件（纯 Python 变量，直接改值即可），避免每次命令行带参数或设环境变量。
 
 ```bash
-cp config.ini.example config.ini   # 复制模板
-# 编辑 config.ini，改完重启 fold-server.py 生效
+cp config.example.py config.py   # 复制模板
+# 编辑 config.py，改完重启 fold-server.py / clean.py 生效
 ```
 
-可配置项：模拟器实例名、窗口模式、启动超时、端口、多设备 connect-key、emulator/hdc 路径。详见 `config.ini.example` 注释。
+可配置项：模拟器实例名、窗口模式、启动超时、端口、多设备 connect-key、emulator/hdc 路径。详见 `config.example.py` 注释。
 
 **优先级**（高 → 低）：
 
 ```
-命令行参数  >  环境变量  >  config.ini  >  代码默认值
+命令行参数  >  环境变量  >  config.py  >  代码默认值
 ```
 
-| 配置项 | 命令行 | 环境变量 | config.ini | 默认 |
-|--------|--------|----------|------------|------|
-| 模拟器实例名 | `python3 fold-server.py "Pura X"` | `EMULATOR_INSTANCE` | `[emulator] instance` | `Mate X7` |
-| 窗口模式 | — | `FOLD_HEADLESS` | `[emulator] headless` | 带窗口 |
-| 启动超时 | — | `FOLD_EMU_TIMEOUT` | `[emulator] start_timeout` | `120` |
-| 服务端口 | — | — | `[network] server_port` | `8766` |
-| 设备端口 | — | — | `[network] device_port` | `8765` |
-| 多设备 connect-key | — | `HDC_CONNECT_KEY` | `[network] connect_key` | 自动 |
-| Emulator 路径 | — | `EMULATOR_PATH` | `[paths] emulator_path` | 自动探测 |
-| hdc 路径 | — | `HDC_PATH` | `[paths] hdc_path` | 自动探测 |
+| 配置项 | 命令行 | 环境变量 | config.py 变量 | 默认 |
+|--------|--------|----------|----------------|------|
+| 模拟器实例名 | `python3 fold-server.py "Pura X"` | `EMULATOR_INSTANCE` | `EMULATOR_INSTANCE` | `Mate X7` |
+| 窗口模式 | — | `FOLD_HEADLESS` | `HEADLESS` | 带窗口 |
+| 启动超时 | — | `FOLD_EMU_TIMEOUT` | `EMU_START_TIMEOUT` | `120` |
+| 服务端口 | — | — | `PORT` | `8766` |
+| 设备端口 | — | — | `DEVICE_PORT` | `8765` |
+| 多设备 connect-key | — | `HDC_CONNECT_KEY` | `HDC_CONNECT_KEY` | 自动 |
+| Emulator 路径 | — | `EMULATOR_PATH` | `EMULATOR_PATH` | 自动探测 |
+| hdc 路径 | — | `HDC_PATH` | `HDC_PATH` | 自动探测 |
 
-> `config.ini` 是本机私有配置，已加入 `.gitignore`；`config.ini.example` 是入库模板。
+> `config.py` 是本机私有配置，已加入 `.gitignore`；`config.example.py` 是入库模板。
 
 ---
 

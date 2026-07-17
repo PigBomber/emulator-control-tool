@@ -27,70 +27,76 @@ import platform
 import threading
 import time
 import signal
-import configparser
 
 # ============ 配置加载 ============
-# 优先级（高 → 低）：命令行参数 > 环境变量 > config.ini > 代码默认值
-# config.ini 为本机私有（已 .gitignore），config.ini.example 是入库模板。
+# 优先级（高 → 低）：命令行参数 > 环境变量 > config.py > 代码默认值
+# config.py 为本机私有（已 .gitignore），config.example.py 是入库模板。
 
 
 def _config_path():
-    """config.ini 路径：与脚本同目录。不存在则返回 None。"""
-    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.ini")
+    """config.py 路径：与脚本同目录。存在返回路径，否则 None。"""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
     return p if os.path.isfile(p) else None
 
 
-def load_config():
-    """读取 config.ini，返回 dict（section->key->value），文件不存在返回 {}。
-    所有值均为字符串原样，由调用方按需转换。"""
+def _load_config_module():
+    """import config.py（若存在）。失败/不存在返回空对象，不抛异常。"""
     p = _config_path()
     if not p:
-        return {}
-    parser = configparser.ConfigParser()
-    parser.read(p, encoding="utf-8")
-    out = {}
-    for section in parser.sections():
-        out[section] = dict(parser.items(section))
-    return out
+        # 没有配置文件，返回一个带默认值的空壳对象
+        class _Empty:
+            pass
+        return _Empty()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_fold_config", p)
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as e:
+        print(f"  ⚠ 读取 config.py 失败（{e}），将使用默认值")
+        import types
+        mod = types.SimpleNamespace()
+    return mod
 
 
-_CFG = load_config()
+_CFG = _load_config_module()
 
 
-def _pick(env_key, section, cfg_key, default):
-    """统一优先级解析单个配置项：
-    环境变量 > config.ini[section][cfg_key] > default。
+def _cfg_value(name, default):
+    """从 config.py 取名为 name 的属性，没有就用 default。"""
+    return getattr(_CFG, name, default)
+
+
+def _pick(env_key, cfg_name, default):
+    """统一优先级：环境变量 > config.py 的同名属性 > default。
     env_key 为 None 表示该项不支持环境变量。"""
     if env_key:
         env_val = os.environ.get(env_key)
         if env_val is not None and env_val != "":
             return env_val
-    sect = _CFG.get(section, {})
-    ini_val = sect.get(cfg_key)
-    if ini_val is not None and ini_val.strip() != "":
-        return ini_val.strip()
+    cfg_val = getattr(_CFG, cfg_name, None)
+    if cfg_val is not None and cfg_val != "":
+        return cfg_val
     return default
 
 
 # ---- 各配置项（命令行参数在 main() 里覆盖 EMULATOR_INSTANCE）----
-# fold-server 监听端口（宿主机）
-PORT = int(_pick(None, "network", "server_port", 8766))
-# 设备内访问端口（通过 rport 转发到 PORT；不同端口避免监听冲突）
-DEVICE_PORT = int(_pick(None, "network", "device_port", 8765))
+# 环境变量 > config.py > 默认值；端口/路径类只支持 config.py 与默认值
+EMULATOR_INSTANCE = _pick("EMULATOR_INSTANCE", "EMULATOR_INSTANCE", "Mate X7")
+# HEADLESS：环境变量是字符串("0"/"1")，config.py 是布尔；统一转 bool
+_headless_raw = _pick("FOLD_HEADLESS", "HEADLESS", False)
+if isinstance(_headless_raw, str):
+    HEADLESS = _headless_raw.lower() in ("1", "true", "yes")
+else:
+    HEADLESS = bool(_headless_raw)
+EMU_START_TIMEOUT = int(_pick("FOLD_EMU_TIMEOUT", "EMU_START_TIMEOUT", 120))
+EMU_POLL_INTERVAL = 2  # 轮询设备上线间隔秒数（固定，不开放配置）
 
-# 模拟器实例名（命令行参数 / EMULATOR_INSTANCE / config.ini / 默认值）
-EMULATOR_INSTANCE = _pick("EMULATOR_INSTANCE", "emulator", "instance", "Mate X7")
-# 无窗口模式：true=无窗口（省资源/CI），false=带 GUI 窗口（默认）
-HEADLESS = _pick("FOLD_HEADLESS", "emulator", "headless", "false").lower() in ("1", "true", "yes")
-# 等待模拟器上线超时秒数
-EMU_START_TIMEOUT = int(_pick("FOLD_EMU_TIMEOUT", "emulator", "start_timeout", "120"))
-# 轮询设备上线间隔秒数
-EMU_POLL_INTERVAL = 2
-
-# 多设备时显式指定的 connect-key（留空=自动）
-EMULATOR_PATH_OVERRIDE = _pick("EMULATOR_PATH", "paths", "emulator_path", "")
-HDC_PATH_OVERRIDE = _pick("HDC_PATH", "paths", "hdc_path", "")
-CONNECT_KEY_CFG = _pick("HDC_CONNECT_KEY", "network", "connect_key", "")
+PORT = int(_cfg_value("PORT", 8766))
+DEVICE_PORT = int(_cfg_value("DEVICE_PORT", 8765))
+EMULATOR_PATH_OVERRIDE = _pick("EMULATOR_PATH", "EMULATOR_PATH", "")
+HDC_PATH_OVERRIDE = _pick("HDC_PATH", "HDC_PATH", "")
+CONNECT_KEY_CFG = _pick("HDC_CONNECT_KEY", "HDC_CONNECT_KEY", None)
 
 # 运行时确定的当前目标设备 connect-key（多设备时用于 hdc -t 路由）
 # None 表示尚未确定 / 单设备时 hdc 无需 -t
@@ -361,7 +367,7 @@ def resolve_connect_key():
     if len(keys) == 1:
         CURRENT_CONNECT_KEY = keys[0]
         return keys[0], "auto"
-    # 多设备：优先用 config.ini/环境变量指定的 connect-key（CONNECT_KEY_CFG 已含优先级）
+    # 多设备：优先用 config.py/环境变量指定的 connect-key（CONNECT_KEY_CFG 已含优先级）
     cfg_key = (CONNECT_KEY_CFG or "").strip()
     if cfg_key and cfg_key in keys:
         CURRENT_CONNECT_KEY = cfg_key
@@ -676,7 +682,7 @@ def main():
     print(f"  窗口模式: {'无窗口' if HEADLESS else '带 GUI 窗口'}")
     print(f"  日志文件: {log_path}")
     cfg_p = _config_path()
-    print(f"  配置文件: {cfg_p or '未使用（可用 config.ini.example 创建 config.ini）'}")
+    print(f"  配置文件: {cfg_p or '未使用（可用 config.example.py 创建 config.py）'}")
     print_paths()
     print("")
 

@@ -1,4 +1,4 @@
 /fold-server.log
 __pycache__/
-# 用户私有配置（从 config.ini.example 复制而来，不入库）
-/config.ini
+# 用户私有配置（从 config.example.py 复制而来，不入库）
+/config.py
