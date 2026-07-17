@@ -1,2 +1,3 @@
 /emulator-control-server.log
 __pycache__/
+/fold-server.log  # 旧名(已重命名,兜底忽略)
