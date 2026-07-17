@@ -1,4 +1,4 @@
-# fold-control-tool
+# emulator-control-tool
 
 HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
@@ -63,7 +63,7 @@ HarmonyOS 折叠屏模拟器折叠 / 悬停 / 旋转控制工具。
 
 ### 2. 启动 emulator-control-server（手动）
 
-跑测试前需要先手动启动 emulator-control-server（已不再随 hvigor 自动启动）：
+跑测试前需要先手动启动 emulator-control-server：
 
 ```bash
 python3 emulator-control-server.py              # 用 config.py 里的实例名
